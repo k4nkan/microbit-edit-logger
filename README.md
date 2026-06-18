@@ -1,13 +1,14 @@
 # microbit-edit-logger
 
-MakeCode for micro:bit の editor extension として、編集中コードのスナップショットを記録する最小実装です。
+MakeCode for micro:bit の editor extension として、編集中コードの変更履歴を記録する最小実装です。
 
 この repository は **GitHub に push する拡張機能本体** です。MakeCode 本体のローカル起動環境は含めません。
 
 ## できること
 
 - `main.ts` / `main.blocks` を `extusercode` で読み取る
-- Snapshot ボタン、または一定間隔で履歴を保存する
+- Start / Stop で記録範囲を決める
+- Start中にコード内容が変わった時だけ履歴を保存する
 - ブロック種別数と前回との差分を表示する
 - JSON / CSV を画面内に表示してコピーできる
 
@@ -48,7 +49,7 @@ npm run serve:editor
 
 このサーバーは `http://localhost:8080/extension.html` を配信します。
 
-このURLを直接開いた場合はUI確認だけできます。`Snapshot` でコードを読むには、MakeCode の `Edit Logger` ボタンからこの画面を開く必要があります。
+このURLを直接開いた場合はUI確認だけできます。コードを読むには、MakeCode の `Edit Logger` ボタンからこの画面を開く必要があります。
 
 ## ローカル MakeCode で確認
 
@@ -105,4 +106,4 @@ GET /extension.html HTTP/1.1 200
 
 ## 注意
 
-`edit logger is enabled` ブロックは、MakeCode に拡張として認識させるための最小ブロックです。実際のログ取得は editor extension パネルの `Snapshot` / `Start Auto` で行います。
+`edit logger is enabled` ブロックは、MakeCode に拡張として認識させるための最小ブロックです。実際のログ取得は editor extension パネルの `Start` / `Stop` で行います。
