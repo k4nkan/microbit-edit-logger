@@ -57,7 +57,8 @@
 
         .toolbar,
         .summary,
-        .log {
+        .log,
+        .export-panel {
             background: var(--panel);
             border: 1px solid var(--line);
             border-radius: 8px;
@@ -139,6 +140,39 @@
 
         .log {
             overflow: hidden;
+        }
+
+        .export-panel {
+            margin-top: 12px;
+            padding: 12px;
+        }
+
+        .export-panel[hidden] {
+            display: none;
+        }
+
+        .export-panel-header,
+        .export-actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .export-panel p {
+            color: var(--muted);
+            margin: 8px 0;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 180px;
+            resize: vertical;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            color: var(--text);
+            font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            padding: 10px;
         }
 
         table {
@@ -229,6 +263,19 @@
             </table>
             <div id="empty" class="empty">No snapshots yet.</div>
         </section>
+
+        <section id="exportPanel" class="export-panel" aria-label="export" hidden>
+            <div class="export-panel-header">
+                <strong id="exportTitle">Export</strong>
+                <button id="closeExport" type="button">Close</button>
+            </div>
+            <p>Download may be blocked by the MakeCode iframe sandbox. Copy the content below if the file does not download.</p>
+            <textarea id="exportOutput" readonly spellcheck="false"></textarea>
+            <div class="export-actions">
+                <span id="exportInfo" class="status">export ready</span>
+                <button id="copyExport" type="button">Copy</button>
+            </div>
+        </section>
     </main>
 
     <script>
@@ -249,6 +296,10 @@
         const lastChangeEl = document.getElementById("lastChange")
         const intervalEl = document.getElementById("interval")
         const toggleEl = document.getElementById("toggle")
+        const exportPanelEl = document.getElementById("exportPanel")
+        const exportTitleEl = document.getElementById("exportTitle")
+        const exportOutputEl = document.getElementById("exportOutput")
+        const exportInfoEl = document.getElementById("exportInfo")
 
         function send(action, body) {
             if (window.parent === window) {
@@ -390,18 +441,18 @@
                 .replaceAll("'", "&#039;")
         }
 
-        function download(filename, mime, content) {
-            const blob = new Blob([content], { type: mime })
-            const url = URL.createObjectURL(blob)
-            const link = document.createElement("a")
-            link.href = url
-            link.download = filename
-            link.click()
-            URL.revokeObjectURL(url)
+        function showExport(filename, content) {
+            exportTitleEl.textContent = filename
+            exportOutputEl.value = content
+            exportPanelEl.hidden = false
+            exportOutputEl.focus()
+            exportOutputEl.select()
+            setStatus("export ready; copy text below", "ok")
+            exportInfoEl.textContent = "copy export text"
         }
 
         function exportJson() {
-            download("makecode-edit-log.json", "application/json", JSON.stringify(snapshots, null, 2))
+            showExport("makecode-edit-log.json", JSON.stringify(snapshots, null, 2))
         }
 
         function exportCsv() {
@@ -416,7 +467,7 @@
                     summarizeDiff(snapshot.diff)
                 ].map(csvCell).join(","))
             }
-            download("makecode-edit-log.csv", "text/csv", lines.join("\n"))
+            showExport("makecode-edit-log.csv", lines.join("\n"))
         }
 
         function csvCell(value) {
@@ -469,6 +520,23 @@
         document.getElementById("toggle").addEventListener("click", toggleAuto)
         document.getElementById("exportJson").addEventListener("click", exportJson)
         document.getElementById("exportCsv").addEventListener("click", exportCsv)
+        document.getElementById("closeExport").addEventListener("click", () => {
+            exportPanelEl.hidden = true
+        })
+        document.getElementById("copyExport").addEventListener("click", async () => {
+            exportOutputEl.focus()
+            exportOutputEl.select()
+
+            try {
+                await navigator.clipboard.writeText(exportOutputEl.value)
+                setStatus("export copied", "ok")
+                exportInfoEl.textContent = "copied"
+            } catch {
+                document.execCommand("copy")
+                setStatus("export selected; press Cmd+C if copy did not run", "ok")
+                exportInfoEl.textContent = "selected"
+            }
+        })
         document.getElementById("clear").addEventListener("click", () => {
             snapshots = []
             saveSnapshots()

@@ -9,9 +9,9 @@ MakeCode for micro:bit の editor extension として、編集中コードのス
 - `main.ts` / `main.blocks` を `extusercode` で読み取る
 - Snapshot ボタン、または一定間隔で履歴を保存する
 - ブロック種別数と前回との差分を表示する
-- JSON / CSV でエクスポートする
+- JSON / CSV を画面内に表示してコピーできる
 
-ログはブラウザの `localStorage` に保存されます。自動でファイル保存はしません。
+ログはブラウザの `localStorage` に保存されます。MakeCode の iframe sandbox では通常の自動ダウンロードがブロックされるため、エクスポート内容は画面内のテキスト欄にも表示します。
 
 ## 重要な制約
 
