@@ -1,0 +1,22 @@
+{
+    "name": "microbit-edit-logger",
+    "version": "0.0.1",
+    "description": "MakeCode editor extension for collecting edit history snapshots.",
+    "dependencies": {
+        "core": "*",
+        "microphone": "*"
+    },
+    "files": [
+        "main.ts",
+        "README.md"
+    ],
+    "testFiles": [
+        "test.ts"
+    ],
+    "public": true,
+    "extension": {
+        "namespace": "editLogger",
+        "label": "Edit Logger",
+        "localUrl": "http://localhost:8080/extension.html"
+    }
+}

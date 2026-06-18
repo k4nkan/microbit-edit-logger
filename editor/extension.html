@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MakeCode Edit Logger</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --bg: #f5f7fb;
+            --panel: #ffffff;
+            --text: #1f2937;
+            --muted: #667085;
+            --line: #d8dee9;
+            --primary: #4051b5;
+            --primary-dark: #2f3f99;
+            --danger: #b42318;
+            --ok: #027a48;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-size: 14px;
+        }
+
+        main {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 16px;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 20px;
+            line-height: 1.2;
+        }
+
+        .status {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .toolbar,
+        .summary,
+        .log {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
+
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        button {
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: #fff;
+            color: var(--text);
+            cursor: pointer;
+            font: inherit;
+            min-height: 34px;
+            padding: 6px 10px;
+        }
+
+        button.primary {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: #fff;
+        }
+
+        button.primary:hover {
+            background: var(--primary-dark);
+        }
+
+        button.danger {
+            color: var(--danger);
+        }
+
+        label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--muted);
+        }
+
+        input[type="number"] {
+            width: 72px;
+            min-height: 34px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 6px 8px;
+            font: inherit;
+        }
+
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 1px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+
+        .metric {
+            background: #fff;
+            padding: 12px;
+        }
+
+        .metric span {
+            display: block;
+            color: var(--muted);
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        .metric strong {
+            font-size: 20px;
+        }
+
+        .log {
+            overflow: hidden;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            border-bottom: 1px solid var(--line);
+            padding: 9px 10px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background: #eef2ff;
+            color: #30374f;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        td {
+            font-size: 13px;
+        }
+
+        .empty {
+            padding: 24px;
+            color: var(--muted);
+            text-align: center;
+        }
+
+        .ok {
+            color: var(--ok);
+        }
+
+        .error {
+            color: var(--danger);
+        }
+
+        @media (max-width: 720px) {
+            .summary {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <div>
+                <h1>Edit Logger</h1>
+                <div id="status" class="status">initializing</div>
+            </div>
+        </header>
+
+        <section class="toolbar" aria-label="controls">
+            <button id="snapshot" class="primary" type="button">Snapshot</button>
+            <button id="toggle" type="button">Start Auto</button>
+            <label>
+                every
+                <input id="interval" type="number" min="1" max="60" value="5">
+                sec
+            </label>
+            <button id="exportJson" type="button">Export JSON</button>
+            <button id="exportCsv" type="button">Export CSV</button>
+            <button id="clear" class="danger" type="button">Clear</button>
+        </section>
+
+        <section class="summary" aria-label="summary">
+            <div class="metric"><span>Snapshots</span><strong id="count">0</strong></div>
+            <div class="metric"><span>Block Types</span><strong id="types">0</strong></div>
+            <div class="metric"><span>Blocks</span><strong id="blocks">0</strong></div>
+            <div class="metric"><span>Last Change</span><strong id="lastChange">-</strong></div>
+        </section>
+
+        <section class="log" aria-label="snapshots">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Files</th>
+                        <th>Blocks</th>
+                        <th>Change</th>
+                    </tr>
+                </thead>
+                <tbody id="rows"></tbody>
+            </table>
+            <div id="empty" class="empty">No snapshots yet.</div>
+        </section>
+    </main>
+
+    <script>
+        const STORAGE_KEY = "makecode-edit-logger:snapshots"
+        const extId = window.location.hash.slice(1)
+        const pending = new Map()
+
+        let requestSeq = 0
+        let snapshots = loadSnapshots()
+        let autoTimer = 0
+
+        const statusEl = document.getElementById("status")
+        const rowsEl = document.getElementById("rows")
+        const emptyEl = document.getElementById("empty")
+        const countEl = document.getElementById("count")
+        const typesEl = document.getElementById("types")
+        const blocksEl = document.getElementById("blocks")
+        const lastChangeEl = document.getElementById("lastChange")
+        const intervalEl = document.getElementById("interval")
+        const toggleEl = document.getElementById("toggle")
+
+        function send(action, body) {
+            const id = `edit-logger-${++requestSeq}`
+            pending.set(id, action)
+            window.parent.postMessage({
+                type: "pxtpkgext",
+                extId,
+                id,
+                action,
+                response: true,
+                body
+            }, "*")
+        }
+
+        function setStatus(text, kind) {
+            statusEl.textContent = text
+            statusEl.className = `status ${kind || ""}`.trim()
+        }
+
+        function loadSnapshots() {
+            try {
+                return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]")
+            } catch {
+                return []
+            }
+        }
+
+        function saveSnapshots() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshots))
+        }
+
+        function requestSnapshot() {
+            setStatus("reading user code")
+            send("extusercode")
+        }
+
+        function createSnapshot(files) {
+            const mainTs = files["main.ts"] || ""
+            const mainBlocks = files["main.blocks"] || ""
+            const blockTypes = countBlockTypes(mainBlocks)
+            const previous = snapshots[snapshots.length - 1]
+            const diff = diffBlockTypes(previous ? previous.blockTypes : {}, blockTypes)
+
+            return {
+                at: new Date().toISOString(),
+                files: Object.keys(files).sort(),
+                mainTsLength: mainTs.length,
+                mainBlocksLength: mainBlocks.length,
+                blockTypes,
+                totalBlocks: Object.values(blockTypes).reduce((sum, count) => sum + count, 0),
+                diff
+            }
+        }
+
+        function countBlockTypes(blocksXml) {
+            const counts = {}
+            if (!blocksXml) return counts
+
+            const doc = new DOMParser().parseFromString(blocksXml, "application/xml")
+            for (const block of doc.querySelectorAll("block[type], shadow[type]")) {
+                const type = block.getAttribute("type")
+                counts[type] = (counts[type] || 0) + 1
+            }
+            return counts
+        }
+
+        function diffBlockTypes(previous, current) {
+            const keys = new Set([...Object.keys(previous), ...Object.keys(current)])
+            const added = []
+            const removed = []
+            const changed = []
+
+            for (const key of keys) {
+                const before = previous[key] || 0
+                const after = current[key] || 0
+                if (!before && after) added.push(`${key} +${after}`)
+                else if (before && !after) removed.push(`${key} -${before}`)
+                else if (before !== after) changed.push(`${key} ${after - before > 0 ? "+" : ""}${after - before}`)
+            }
+
+            return { added, removed, changed }
+        }
+
+        function summarizeDiff(diff) {
+            const parts = []
+            if (diff.added.length) parts.push(`added: ${diff.added.join(", ")}`)
+            if (diff.removed.length) parts.push(`removed: ${diff.removed.join(", ")}`)
+            if (diff.changed.length) parts.push(`changed: ${diff.changed.join(", ")}`)
+            return parts.join(" / ") || "no block type change"
+        }
+
+        function render() {
+            const latest = snapshots[snapshots.length - 1]
+            countEl.textContent = String(snapshots.length)
+            typesEl.textContent = latest ? String(Object.keys(latest.blockTypes).length) : "0"
+            blocksEl.textContent = latest ? String(latest.totalBlocks) : "0"
+            lastChangeEl.textContent = latest ? summarizeShortDiff(latest.diff) : "-"
+
+            rowsEl.innerHTML = ""
+            emptyEl.hidden = snapshots.length > 0
+
+            for (const snapshot of snapshots.slice(-50).reverse()) {
+                const row = document.createElement("tr")
+                row.innerHTML = `
+                    <td>${escapeHtml(formatTime(snapshot.at))}</td>
+                    <td>${escapeHtml(snapshot.files.join(", "))}</td>
+                    <td>${snapshot.totalBlocks}</td>
+                    <td>${escapeHtml(summarizeDiff(snapshot.diff))}</td>
+                `
+                rowsEl.appendChild(row)
+            }
+        }
+
+        function summarizeShortDiff(diff) {
+            const count = diff.added.length + diff.removed.length + diff.changed.length
+            return count ? String(count) : "0"
+        }
+
+        function formatTime(value) {
+            return new Date(value).toLocaleTimeString("ja-JP", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit"
+            })
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;")
+        }
+
+        function download(filename, mime, content) {
+            const blob = new Blob([content], { type: mime })
+            const url = URL.createObjectURL(blob)
+            const link = document.createElement("a")
+            link.href = url
+            link.download = filename
+            link.click()
+            URL.revokeObjectURL(url)
+        }
+
+        function exportJson() {
+            download("makecode-edit-log.json", "application/json", JSON.stringify(snapshots, null, 2))
+        }
+
+        function exportCsv() {
+            const header = ["at", "files", "totalBlocks", "blockTypes", "diff"]
+            const lines = [header.join(",")]
+            for (const snapshot of snapshots) {
+                lines.push([
+                    snapshot.at,
+                    snapshot.files.join("|"),
+                    snapshot.totalBlocks,
+                    Object.entries(snapshot.blockTypes).map(([key, value]) => `${key}:${value}`).join("|"),
+                    summarizeDiff(snapshot.diff)
+                ].map(csvCell).join(","))
+            }
+            download("makecode-edit-log.csv", "text/csv", lines.join("\n"))
+        }
+
+        function csvCell(value) {
+            return `"${String(value).replaceAll('"', '""')}"`
+        }
+
+        function toggleAuto() {
+            if (autoTimer) {
+                clearInterval(autoTimer)
+                autoTimer = 0
+                toggleEl.textContent = "Start Auto"
+                setStatus("auto snapshot stopped")
+                return
+            }
+
+            const seconds = Math.max(1, Math.min(60, Number(intervalEl.value) || 5))
+            intervalEl.value = String(seconds)
+            requestSnapshot()
+            autoTimer = window.setInterval(requestSnapshot, seconds * 1000)
+            toggleEl.textContent = "Stop Auto"
+            setStatus(`auto snapshot every ${seconds}s`, "ok")
+        }
+
+        window.addEventListener("message", ev => {
+            const msg = ev.data || {}
+            if (msg.id && pending.has(msg.id)) {
+                const action = pending.get(msg.id)
+                pending.delete(msg.id)
+
+                if (!msg.success) {
+                    setStatus(`${action} failed: ${msg.error || "unknown error"}`, "error")
+                    return
+                }
+
+                if (action === "extusercode") {
+                    const snapshot = createSnapshot(msg.resp || {})
+                    snapshots.push(snapshot)
+                    saveSnapshots()
+                    render()
+                    setStatus(`snapshot saved at ${formatTime(snapshot.at)}`, "ok")
+                } else if (action === "extinit") {
+                    setStatus("ready", "ok")
+                }
+            }
+        })
+
+        document.getElementById("snapshot").addEventListener("click", requestSnapshot)
+        document.getElementById("toggle").addEventListener("click", toggleAuto)
+        document.getElementById("exportJson").addEventListener("click", exportJson)
+        document.getElementById("exportCsv").addEventListener("click", exportCsv)
+        document.getElementById("clear").addEventListener("click", () => {
+            snapshots = []
+            saveSnapshots()
+            render()
+            setStatus("logs cleared")
+        })
+
+        window.addEventListener("load", () => {
+            render()
+            send("extinit", "")
+        })
+    </script>
+</body>
+</html>
