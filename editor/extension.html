@@ -251,6 +251,11 @@
         const toggleEl = document.getElementById("toggle")
 
         function send(action, body) {
+            if (window.parent === window) {
+                setStatus("open this page from the MakeCode Edit Logger button", "error")
+                return false
+            }
+
             const id = `edit-logger-${++requestSeq}`
             pending.set(id, action)
             window.parent.postMessage({
@@ -261,6 +266,7 @@
                 response: true,
                 body
             }, "*")
+            return true
         }
 
         function setStatus(text, kind) {
@@ -436,6 +442,8 @@
 
         window.addEventListener("message", ev => {
             const msg = ev.data || {}
+            if (msg.type !== "pxtpkgext") return
+
             if (msg.id && pending.has(msg.id)) {
                 const action = pending.get(msg.id)
                 pending.delete(msg.id)
@@ -470,7 +478,11 @@
 
         window.addEventListener("load", () => {
             render()
-            send("extinit", "")
+            if (window.parent === window) {
+                setStatus("UI preview only. Open from MakeCode to capture snapshots.", "error")
+            } else {
+                send("extinit", "")
+            }
         })
     </script>
 </body>

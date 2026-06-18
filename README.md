@@ -22,8 +22,10 @@ MakeCode for micro:bit の editor extension として、編集中コードのス
 検証にはローカル MakeCode を使います。
 
 ```text
-http://localhost:3232/?debugExtensions=1
+http://localhost:3232/index.html?debugExtensions=1#local_token=...&wsport=3233
 ```
+
+`local_token` はローカル MakeCode server がターミナルに表示する値を使います。
 
 ## Setup
 
@@ -46,28 +48,38 @@ npm run serve:editor
 
 このサーバーは `http://localhost:8080/extension.html` を配信します。
 
+このURLを直接開いた場合はUI確認だけできます。`Snapshot` でコードを読むには、MakeCode の `Edit Logger` ボタンからこの画面を開く必要があります。
+
 ## ローカル MakeCode で確認
 
 別 repository の MakeCode ローカル起動環境を使います。
 
 ```bash
-cd /Users/kanta/dev/active/microbit-make-code
+cd /Users/kanta/dev/active/microbit-edit-logger-local
 npm run serve
 ```
 
-`microbit-make-code` 側の `npm run serve` は、ローカル開発用に `localhost:8080` を editor extension の承認済みURLへ追加してから MakeCode を起動します。
+`microbit-edit-logger-local` 側の `npm run serve` は、ローカル開発用に `localhost:8080` を editor extension の承認済みURLへ追加してから MakeCode を起動します。
 
-ブラウザで開きます。
+ターミナルに出るURLを確認します。
 
 ```text
-http://localhost:3232/?debugExtensions=1
+http://localhost:3232/#local_token=...&wsport=3233
+```
+
+ブラウザでは、`debugExtensions=1` を `index.html` の後ろ、`#` より前に入れて開きます。
+
+```text
+http://localhost:3232/index.html?debugExtensions=1#local_token=...&wsport=3233
 ```
 
 GitHub に push 済みのこの repository URL を MakeCode の「拡張機能」に貼ります。
 
 ```text
-https://github.com/<your-name>/microbit-edit-logger
+https://github.com/k4nkan/microbit-edit-logger
 ```
+
+末尾に `.git` は付けません。`.git` 付きURLは MakeCode 側で解決できず、拡張機能検索に出ません。
 
 成功すると `Edit Logger` カテゴリ内で editor extension のボタン/パネルが開けます。`npm run serve:editor` 側のターミナルには次のようなログが出ます。
 
