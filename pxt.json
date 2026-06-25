@@ -1,7 +1,7 @@
 {
     "name": "microbit-edit-logger",
     "version": "0.0.1",
-    "description": "MakeCode editor extension for collecting edit history snapshots.",
+    "description": "MakeCode editor extension for collecting edit and sensor logs.",
     "dependencies": {
         "core": "*",
         "microphone": "*"

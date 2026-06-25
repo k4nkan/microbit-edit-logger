@@ -9,6 +9,7 @@ MakeCode for micro:bit の editor extension として、編集中コードの変
 - `main.ts` / `main.blocks` を `extusercode` で読み取る
 - Start / Stop で記録範囲を決める
 - Start中にコード内容が変わった時だけ履歴を保存する
+- micro:bit 実行中のセンサー値を serial 経由で保存する
 - ブロック種別数と前回との差分を表示する
 - JSON / CSV を画面内に表示してコピーできる
 
@@ -50,6 +51,23 @@ npm run serve:editor
 このサーバーは `http://localhost:8080/extension.html` を配信します。
 
 このURLを直接開いた場合はUI確認だけできます。コードを読むには、MakeCode の `Edit Logger` ボタンからこの画面を開く必要があります。
+
+## センサーログ
+
+micro:bit 側のプログラムに、`Edit Logger` の `start sensor logging every 1000 ms` ブロックを置きます。
+
+```typescript
+editLogger.startSensorLogging(1000);
+```
+
+このブロックは、実行中に次の値を serial へ出力します。
+
+- running time
+- acceleration x / y / z
+- light level
+- temperature
+
+editor extension の `Start` を押している間だけ、`EL_SENSOR,...` 行を `sensor` event として保存します。
 
 ## ローカル MakeCode で確認
 
@@ -106,4 +124,4 @@ GET /extension.html HTTP/1.1 200
 
 ## 注意
 
-`edit logger is enabled` ブロックは、MakeCode に拡張として認識させるための最小ブロックです。実際のログ取得は editor extension パネルの `Start` / `Stop` で行います。
+`edit logger is enabled` ブロックは、MakeCode に拡張として認識させるための最小ブロックです。編集ログの記録範囲は editor extension パネルの `Start` / `Stop` で決めます。
