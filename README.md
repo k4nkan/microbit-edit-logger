@@ -18,7 +18,8 @@ MakeCode for micro:bit 用の editor extension です。
 - ボタン A / B
 - タッチロゴ
 - 音量
-- 方位
+
+方位は UI/CSV の列だけ残しています。`start sensor logging` の標準ログでは、安定性を優先して取得しません。
 
 ## セットアップ
 

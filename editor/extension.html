@@ -309,6 +309,7 @@
       const STORAGE_KEY = "makecode-edit-logger:events";
       const WATCH_INTERVAL_MS = 2000;
       const SENSOR_LINE_PREFIX = "EL_SENSOR";
+      const MIN_SENSOR_FIELD_COUNT = 6;
       const SENSOR_FIELDS = [
         { key: "elapsedMs", label: "Elapsed(ms)", summary: "elapsed" },
         { key: "accelerationX", label: "Accel X", summary: "ax" },
@@ -475,6 +476,7 @@
 
         beginSession() {
           this.buffer = "";
+          this.streamRequested = false;
           this.requestStream();
         },
 
@@ -482,7 +484,7 @@
           if (this.streamRequested) return;
           this.streamRequested = send(
             "extdatastream",
-            { serial: true },
+            { console: true, serial: true },
             { reason: "sensor" },
           );
         },
@@ -496,9 +498,10 @@
         },
 
         handleConsoleData(body) {
-          if (!body || !body.data) return;
+          const data = typeof body === "string" ? body : body && body.data;
+          if (!data) return;
 
-          this.buffer += String(body.data);
+          this.buffer += String(data);
           const lines = this.buffer.split(/\r?\n/);
           this.buffer = lines.pop() || "";
 
@@ -517,11 +520,18 @@
             return undefined;
 
           const parts = line.split(",");
-          if (parts.length < SENSOR_FIELDS.length + 1) return undefined;
+          if (parts.length < MIN_SENSOR_FIELD_COUNT + 1) return undefined;
 
           const values = {};
           for (let index = 0; index < SENSOR_FIELDS.length; index++) {
-            const value = Number(parts[index + 1]);
+            const rawValue = parts[index + 1];
+            if (rawValue === undefined || rawValue === "") {
+              if (index < MIN_SENSOR_FIELD_COUNT) return undefined;
+              values[SENSOR_FIELDS[index].key] = undefined;
+              continue;
+            }
+
+            const value = Number(rawValue);
             if (!Number.isFinite(value)) return undefined;
             values[SENSOR_FIELDS[index].key] = value;
           }
