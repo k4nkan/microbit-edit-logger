@@ -267,9 +267,14 @@
         </div>
       </section>
 
+      <section class="toolbar" aria-label="view toggle">
+        <button id="viewCode" class="primary" type="button">Block Log</button>
+        <button id="viewSensor" type="button">Sensor Log</button>
+      </section>
+
       <section class="log" aria-label="edit events">
         <table>
-          <thead>
+          <thead id="tableHead">
             <tr>
               <th>Time</th>
               <th>Event</th>
@@ -310,6 +315,7 @@
       let sessionId = "";
       let logging = false;
       let pendingStop = false;
+      let viewMode = "code";
 
       const statusEl = document.getElementById("status");
       const rowsEl = document.getElementById("rows");
@@ -324,6 +330,9 @@
       const exportTitleEl = document.getElementById("exportTitle");
       const exportOutputEl = document.getElementById("exportOutput");
       const exportInfoEl = document.getElementById("exportInfo");
+      const viewCodeEl = document.getElementById("viewCode");
+      const viewSensorEl = document.getElementById("viewSensor");
+      const tableHeadEl = document.getElementById("tableHead");
 
       function send(action, body, meta) {
         if (window.parent === window) {
@@ -642,12 +651,49 @@
           ? summarizeShortDiff(latest.diff)
           : "-";
 
-        rowsEl.innerHTML = "";
-        emptyEl.hidden = events.length > 0;
+        const list = events.filter((event) =>
+          viewMode === "sensor"
+            ? event.type === "sensor"
+            : event.type !== "sensor",
+        );
 
-        for (const event of events.slice(-50).reverse()) {
+        tableHeadEl.innerHTML =
+          viewMode === "sensor"
+            ? `<tr>
+                <th>Time</th>
+                <th>Elapsed(ms)</th>
+                <th>Accel X</th>
+                <th>Accel Y</th>
+                <th>Accel Z</th>
+                <th>Light</th>
+                <th>Temp</th>
+              </tr>`
+            : `<tr>
+                <th>Time</th>
+                <th>Event</th>
+                <th>Blocks</th>
+                <th>Change</th>
+              </tr>`;
+
+        rowsEl.innerHTML = "";
+        emptyEl.hidden = list.length > 0;
+        emptyEl.textContent =
+          viewMode === "sensor" ? "No sensor events yet." : "No events yet.";
+
+        for (const event of list.slice(-50).reverse()) {
           const row = document.createElement("tr");
-          row.innerHTML = `
+          row.innerHTML =
+            viewMode === "sensor"
+              ? `
+                    <td>${escapeHtml(formatTime(event.at))}</td>
+                    <td>${event.elapsedMs ?? "-"}</td>
+                    <td>${event.accelerationX ?? "-"}</td>
+                    <td>${event.accelerationY ?? "-"}</td>
+                    <td>${event.accelerationZ ?? "-"}</td>
+                    <td>${event.lightLevel ?? "-"}</td>
+                    <td>${event.temperature ?? "-"}</td>
+                `
+              : `
                     <td>${escapeHtml(formatTime(event.at))}</td>
                     <td>${escapeHtml(event.type)}</td>
                     <td>${event.totalBlocks ?? "-"}</td>
@@ -850,6 +896,16 @@
           }
         }
       });
+
+      function setViewMode(mode) {
+        viewMode = mode;
+        viewCodeEl.classList.toggle("primary", mode === "code");
+        viewSensorEl.classList.toggle("primary", mode === "sensor");
+        render();
+      }
+
+      viewCodeEl.addEventListener("click", () => setViewMode("code"));
+      viewSensorEl.addEventListener("click", () => setViewMode("sensor"));
 
       startEl.addEventListener("click", startLogging);
       stopEl.addEventListener("click", stopLogging);
