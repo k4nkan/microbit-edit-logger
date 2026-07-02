@@ -7,6 +7,19 @@ MakeCode for micro:bit 用の editor extension です。
 
 この repository は公開用 extension 本体です。ローカル MakeCode の起動環境は含めません。
 
+
+## 記録する値
+
+センサーログでは、次の値を周期的に保存します。
+
+- 加速度 X / Y / Z
+- 明るさ
+- 温度
+- ボタン A / B
+- タッチロゴ
+- 音量
+- 方位
+
 ## セットアップ
 
 依存関係を入れます。

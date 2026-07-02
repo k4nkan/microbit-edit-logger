@@ -53,7 +53,11 @@ namespace editLogger {
         "," +
         pressedFlag(input.buttonIsPressed(Button.B)) +
         "," +
-        pressedFlag(input.logoIsPressed()),
+        pressedFlag(input.logoIsPressed()) +
+        "," +
+        input.soundLevel() +
+        "," +
+        input.compassHeading(),
     );
   }
 
