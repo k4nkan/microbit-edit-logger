@@ -32,13 +32,11 @@ npm run serve:editor
 http://localhost:8080/extension.html
 ```
 
-## ローカル MakeCode で確認
-
-通常は親 workspace から起動します。
+ローカル MakeCode で確認する場合は、親 workspace から起動します。
 
 ```bash
 cd ..
-make dev-open
+make dev
 ```
 
 MakeCode の「拡張機能」に次を貼ります。
@@ -48,4 +46,3 @@ https://github.com/k4nkan/microbit-edit-logger
 ```
 
 公式の `https://makecode.microbit.org` では、開発用 `localhost` の editor UI は許可されません。
-ローカル検証では `lab-microbit` の Makefile を使います。
