@@ -1,5 +1,9 @@
 //% color="#4051B5" icon="\uf1da" block="Edit Logger"
 namespace editLogger {
+  const minSensorIntervalMs = 100;
+  const maxSensorIntervalMs = 60000;
+  const sensorLogPrefix = "EL_SENSOR";
+
   let sensorLogging = false;
   let sensorIntervalMs = 1000;
 
@@ -11,9 +15,7 @@ namespace editLogger {
   //% block="start sensor logging every $intervalMs ms"
   //% intervalMs.defl=1000 intervalMs.min=100 intervalMs.max=60000
   export function startSensorLogging(intervalMs: number): void {
-    if (intervalMs < 100) intervalMs = 100;
-    if (intervalMs > 60000) intervalMs = 60000;
-    sensorIntervalMs = intervalMs;
+    sensorIntervalMs = clampSensorInterval(intervalMs);
 
     if (sensorLogging) return;
     sensorLogging = true;
@@ -33,7 +35,8 @@ namespace editLogger {
 
   function writeSensorLog(): void {
     serial.writeLine(
-      "EL_SENSOR," +
+      sensorLogPrefix +
+        "," +
         input.runningTime() +
         "," +
         input.acceleration(Dimension.X) +
@@ -44,7 +47,23 @@ namespace editLogger {
         "," +
         input.lightLevel() +
         "," +
-        input.temperature(),
+        input.temperature() +
+        "," +
+        pressedFlag(input.buttonIsPressed(Button.A)) +
+        "," +
+        pressedFlag(input.buttonIsPressed(Button.B)) +
+        "," +
+        pressedFlag(input.logoIsPressed()),
     );
+  }
+
+  function clampSensorInterval(intervalMs: number): number {
+    if (intervalMs < minSensorIntervalMs) return minSensorIntervalMs;
+    if (intervalMs > maxSensorIntervalMs) return maxSensorIntervalMs;
+    return intervalMs;
+  }
+
+  function pressedFlag(isPressed: boolean): number {
+    return isPressed ? 1 : 0;
   }
 }

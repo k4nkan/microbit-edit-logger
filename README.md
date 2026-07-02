@@ -66,6 +66,9 @@ editLogger.startSensorLogging(1000);
 - acceleration x / y / z
 - light level
 - temperature
+- button A pressed
+- button B pressed
+- logo touched
 
 editor extension の `Start` を押している間だけ、`EL_SENSOR,...` 行を `sensor` event として保存します。
 

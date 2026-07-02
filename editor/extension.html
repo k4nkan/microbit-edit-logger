@@ -307,6 +307,36 @@
     <script>
       const STORAGE_KEY = "makecode-edit-logger:events";
       const WATCH_INTERVAL_MS = 2000;
+      const SENSOR_LINE_PREFIX = "EL_SENSOR";
+      const SENSOR_FIELDS = [
+        { key: "elapsedMs", label: "Elapsed(ms)", summary: "elapsed" },
+        { key: "accelerationX", label: "Accel X", summary: "ax" },
+        { key: "accelerationY", label: "Accel Y", summary: "ay" },
+        { key: "accelerationZ", label: "Accel Z", summary: "az" },
+        { key: "lightLevel", label: "Light", summary: "light" },
+        { key: "temperature", label: "Temp", summary: "temp" },
+        { key: "buttonA", label: "Button A", summary: "btnA", flag: true },
+        { key: "buttonB", label: "Button B", summary: "btnB", flag: true },
+        {
+          key: "logoTouch",
+          label: "Logo Touch",
+          summary: "logo",
+          flag: true,
+        },
+      ];
+      const CSV_HEADERS = [
+        "at",
+        "sessionId",
+        "type",
+        "elapsedMs",
+        "files",
+        "totalBlocks",
+        "contentHash",
+        ...SENSOR_FIELDS.filter((field) => field.key !== "elapsedMs").map(
+          (field) => field.key,
+        ),
+        "detail",
+      ];
       const extId = window.location.hash.slice(1);
       const pending = new Map();
 
@@ -476,23 +506,21 @@
         },
 
         parseLine(line, body) {
-          if (!logging || !sessionId || !line.startsWith("EL_SENSOR,"))
+          if (
+            !logging ||
+            !sessionId ||
+            !line.startsWith(`${SENSOR_LINE_PREFIX},`)
+          )
             return undefined;
 
           const parts = line.split(",");
-          if (parts.length < 7) return undefined;
+          if (parts.length < SENSOR_FIELDS.length + 1) return undefined;
 
-          const values = {
-            elapsedMs: Number(parts[1]),
-            accelerationX: Number(parts[2]),
-            accelerationY: Number(parts[3]),
-            accelerationZ: Number(parts[4]),
-            lightLevel: Number(parts[5]),
-            temperature: Number(parts[6]),
-          };
-
-          for (const value of Object.values(values)) {
+          const values = {};
+          for (let index = 0; index < SENSOR_FIELDS.length; index++) {
+            const value = Number(parts[index + 1]);
             if (!Number.isFinite(value)) return undefined;
+            values[SENSOR_FIELDS[index].key] = value;
           }
 
           return createSensorEvent(values, body);
@@ -556,19 +584,19 @@
       }
 
       function createSensorEvent(values, body) {
-        return {
+        const event = {
           type: "sensor",
           sessionId,
           at: new Date().toISOString(),
           source: body.source || "",
           sim: !!body.sim,
-          elapsedMs: values.elapsedMs,
-          accelerationX: values.accelerationX,
-          accelerationY: values.accelerationY,
-          accelerationZ: values.accelerationZ,
-          lightLevel: values.lightLevel,
-          temperature: values.temperature,
         };
+
+        for (const field of SENSOR_FIELDS) {
+          event[field.key] = values[field.key];
+        }
+
+        return event;
       }
 
       function createCodeEvent(type, files) {
@@ -659,15 +687,7 @@
 
         tableHeadEl.innerHTML =
           viewMode === "sensor"
-            ? `<tr>
-                <th>Time</th>
-                <th>Elapsed(ms)</th>
-                <th>Accel X</th>
-                <th>Accel Y</th>
-                <th>Accel Z</th>
-                <th>Light</th>
-                <th>Temp</th>
-              </tr>`
+            ? sensorTableHead()
             : `<tr>
                 <th>Time</th>
                 <th>Event</th>
@@ -684,15 +704,7 @@
           const row = document.createElement("tr");
           row.innerHTML =
             viewMode === "sensor"
-              ? `
-                    <td>${escapeHtml(formatTime(event.at))}</td>
-                    <td>${event.elapsedMs ?? "-"}</td>
-                    <td>${event.accelerationX ?? "-"}</td>
-                    <td>${event.accelerationY ?? "-"}</td>
-                    <td>${event.accelerationZ ?? "-"}</td>
-                    <td>${event.lightLevel ?? "-"}</td>
-                    <td>${event.temperature ?? "-"}</td>
-                `
+              ? sensorTableRow(event)
               : `
                     <td>${escapeHtml(formatTime(event.at))}</td>
                     <td>${escapeHtml(event.type)}</td>
@@ -714,7 +726,12 @@
         if (event.type === "start") return "session started";
         if (event.type === "stop") return "session stopped";
         if (event.type === "sensor") {
-          return `ax=${event.accelerationX}, ay=${event.accelerationY}, az=${event.accelerationZ}, light=${event.lightLevel}, temp=${event.temperature}`;
+          return SENSOR_FIELDS.filter((field) => field.key !== "elapsedMs")
+            .map(
+              (field) =>
+                `${field.summary}=${formatSensorValue(event, field)}`,
+            )
+            .join(", ");
         }
         return summarizeDiff(event.diff);
       }
@@ -752,40 +769,10 @@
         },
 
         csv() {
-          const header = [
-            "at",
-            "sessionId",
-            "type",
-            "elapsedMs",
-            "files",
-            "totalBlocks",
-            "contentHash",
-            "accelerationX",
-            "accelerationY",
-            "accelerationZ",
-            "lightLevel",
-            "temperature",
-            "detail",
-          ];
-          const lines = [header.join(",")];
+          const lines = [CSV_HEADERS.join(",")];
           for (const event of events) {
             lines.push(
-              [
-                event.at,
-                event.sessionId,
-                event.type,
-                event.elapsedMs ?? "",
-                event.files ? event.files.join("|") : "",
-                event.totalBlocks ?? "",
-                event.contentHash || "",
-                event.accelerationX ?? "",
-                event.accelerationY ?? "",
-                event.accelerationZ ?? "",
-                event.lightLevel ?? "",
-                event.temperature ?? "",
-                summarizeEvent(event),
-              ]
-                .map((value) => this.csvCell(value))
+              CSV_HEADERS.map((header) => this.csvCell(csvValue(event, header)))
                 .join(","),
             );
           }
@@ -796,6 +783,39 @@
           return `"${String(value).replaceAll('"', '""')}"`;
         },
       };
+
+      function sensorTableHead() {
+        return `<tr>
+                <th>Time</th>
+                ${SENSOR_FIELDS.map(
+                  (field) => `<th>${escapeHtml(field.label)}</th>`,
+                ).join("")}
+              </tr>`;
+      }
+
+      function sensorTableRow(event) {
+        return `
+                    <td>${escapeHtml(formatTime(event.at))}</td>
+                    ${SENSOR_FIELDS.map(
+                      (field) =>
+                        `<td>${escapeHtml(formatSensorValue(event, field))}</td>`,
+                    ).join("")}
+                `;
+      }
+
+      function formatSensorValue(event, field) {
+        const value = event[field.key];
+        if (value === undefined || value === null || value === "") return "-";
+        if (field.flag) return value ? "true" : "false";
+        return value;
+      }
+
+      function csvValue(event, header) {
+        if (header === "files") return event.files ? event.files.join("|") : "";
+        if (header === "detail") return summarizeEvent(event);
+        if (header === "contentHash") return event.contentHash || "";
+        return event[header] ?? "";
+      }
 
       function startLogging() {
         if (logging) return;
