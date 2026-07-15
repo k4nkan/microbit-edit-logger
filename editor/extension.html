@@ -309,6 +309,7 @@
       const STORAGE_KEY = "makecode-edit-logger:events";
       const WATCH_INTERVAL_MS = 2000;
       const SENSOR_LINE_PREFIX = "EL_SENSOR";
+      const BOOT_LINE_PREFIX = "EL_BOOT";
       const MIN_SENSOR_FIELD_COUNT = 6;
       const SENSOR_FIELDS = [
         { key: "elapsedMs", label: "Elapsed(ms)", summary: "elapsed" },
@@ -333,6 +334,8 @@
         "sessionId",
         "type",
         "elapsedMs",
+        "source",
+        "sim",
         "files",
         "totalBlocks",
         "contentHash",
@@ -506,9 +509,27 @@
           this.buffer = lines.pop() || "";
 
           for (const line of lines) {
-            const event = this.parseLine(line.trim(), body);
-            if (event) appendEvent(event);
+            const trimmed = line.trim();
+            const bootEvent = this.parseBootLine(trimmed, body);
+            if (bootEvent) {
+              appendEvent(bootEvent);
+              continue;
+            }
+
+            const sensorEvent = this.parseLine(trimmed, body);
+            if (sensorEvent) appendEvent(sensorEvent);
           }
+        },
+
+        parseBootLine(line, body) {
+          if (!logging || !sessionId || !line.startsWith(`${BOOT_LINE_PREFIX},`))
+            return undefined;
+
+          const parts = line.split(",");
+          const elapsedMs = Number(parts[1]);
+          if (!Number.isFinite(elapsedMs)) return undefined;
+
+          return createBootEvent(elapsedMs, body);
         },
 
         parseLine(line, body) {
@@ -612,6 +633,20 @@
         return event;
       }
 
+      function createBootEvent(elapsedMs, body) {
+        const latest = latestCodeEvent();
+
+        return {
+          type: "boot",
+          sessionId,
+          at: new Date().toISOString(),
+          source: (body && body.source) || "",
+          sim: !!(body && body.sim),
+          elapsedMs,
+          contentHash: latest ? latest.contentHash : "",
+        };
+      }
+
       function createCodeEvent(type, files) {
         const state = createCodeState(files);
         const previous = latestCodeEventForSession();
@@ -643,16 +678,20 @@
         render();
       }
 
+      function isCodeEvent(event) {
+        return event.type === "start" || event.type === "change";
+      }
+
       function latestCodeEvent() {
         for (let i = events.length - 1; i >= 0; i--) {
-          if (events[i].contentHash) return events[i];
+          if (isCodeEvent(events[i])) return events[i];
         }
         return undefined;
       }
 
       function latestCodeEventForSession() {
         for (let i = events.length - 1; i >= 0; i--) {
-          if (events[i].sessionId === sessionId && events[i].contentHash)
+          if (events[i].sessionId === sessionId && isCodeEvent(events[i]))
             return events[i];
         }
         return undefined;
@@ -694,8 +733,8 @@
 
         const list = events.filter((event) =>
           viewMode === "sensor"
-            ? event.type === "sensor"
-            : event.type !== "sensor",
+            ? event.type === "sensor" || event.type === "boot"
+            : event.type !== "sensor" && event.type !== "boot",
         );
 
         tableHeadEl.innerHTML =
@@ -738,6 +777,11 @@
       function summarizeEvent(event) {
         if (event.type === "start") return "session started";
         if (event.type === "stop") return "session stopped";
+        if (event.type === "boot") {
+          return `device boot (sim=${event.sim ? "yes" : "no"}, code=${
+            event.contentHash || "-"
+          })`;
+        }
         if (event.type === "sensor") {
           return SENSOR_FIELDS.filter((field) => field.key !== "elapsedMs")
             .map(

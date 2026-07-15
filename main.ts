@@ -3,6 +3,7 @@ namespace editLogger {
   const minSensorIntervalMs = 100;
   const maxSensorIntervalMs = 60000;
   const sensorLogPrefix = "EL_SENSOR";
+  const bootLogPrefix = "EL_BOOT";
 
   let sensorLogging = false;
   let sensorIntervalMs = 1000;
@@ -68,4 +69,14 @@ namespace editLogger {
   function pressedFlag(isPressed: boolean): number {
     return isPressed ? 1 : 0;
   }
+
+  // Runs once whenever the program starts, i.e. right after a flash or a
+  // manual reset. The editor side anchors this line to the most recently
+  // observed code snapshot, giving it a way to tell which code version was
+  // running during a given stretch of sensor data.
+  function writeBootLog(): void {
+    serial.writeLine(bootLogPrefix + "," + input.runningTime());
+  }
+
+  writeBootLog();
 }
