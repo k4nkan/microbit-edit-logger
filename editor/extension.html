@@ -309,6 +309,7 @@
       const STORAGE_KEY = "makecode-edit-logger:events";
       const WATCH_INTERVAL_MS = 2000;
       const SENSOR_LINE_PREFIX = "EL_SENSOR";
+      const BOOT_LINE_PREFIX = "EL_BOOT";
       const MIN_SENSOR_FIELD_COUNT = 6;
       const SENSOR_FIELDS = [
         { key: "elapsedMs", label: "Elapsed(ms)", summary: "elapsed" },
@@ -330,12 +331,24 @@
       ];
       const CSV_HEADERS = [
         "at",
+        "localDate",
+        "timeZone",
+        "sessionStartedAt",
         "sessionId",
         "type",
         "elapsedMs",
+        "source",
+        "sim",
         "files",
         "totalBlocks",
         "contentHash",
+        "mainTs",
+        "mainBlocks",
+        "runId",
+        "bootAt",
+        "runningContentHash",
+        "runAnchorSource",
+        "blockChanges",
         ...SENSOR_FIELDS.filter((field) => field.key !== "elapsedMs").map(
           (field) => field.key,
         ),
@@ -347,6 +360,9 @@
       let requestSeq = 0;
       let events = loadEvents();
       let sessionId = "";
+      let activeLogSessionId = latestSessionId(events);
+      let sessionStartedAt = "";
+      let activeRun = undefined;
       let logging = false;
       let pendingStop = false;
       let viewMode = "code";
@@ -410,6 +426,35 @@
         localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
       }
 
+      function latestSessionId(items) {
+        for (let index = items.length - 1; index >= 0; index--) {
+          if (items[index].sessionId) return items[index].sessionId;
+        }
+        return "";
+      }
+
+      function activeSessionEvents() {
+        if (!activeLogSessionId) return [];
+        return events.filter((event) => event.sessionId === activeLogSessionId);
+      }
+
+      function createTimeFields() {
+        const now = new Date();
+        return {
+          at: now.toISOString(),
+          localDate: localDateString(now),
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+          sessionStartedAt,
+        };
+      }
+
+      function localDateString(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+
       const codeLogger = {
         watchTimer: 0,
         readInFlight: false,
@@ -461,6 +506,7 @@
           if (reason === "start" || event.contentHash !== this.lastContentHash) {
             this.lastContentHash = event.contentHash;
             appendEvent(event);
+            if (reason === "start") sensorLogger.beginSession();
             setStatus(`${event.type} saved at ${formatTime(event.at)}`, "ok");
           } else if (logging) {
             setStatus("logging; no changes");
@@ -478,6 +524,11 @@
           this.buffer = "";
           this.streamRequested = false;
           this.requestStream();
+        },
+
+        reset() {
+          this.buffer = "";
+          this.streamRequested = false;
         },
 
         requestStream() {
@@ -506,9 +557,27 @@
           this.buffer = lines.pop() || "";
 
           for (const line of lines) {
-            const event = this.parseLine(line.trim(), body);
-            if (event) appendEvent(event);
+            const trimmed = line.trim();
+            const bootEvent = this.parseBootLine(trimmed, body);
+            if (bootEvent) {
+              appendEvent(bootEvent);
+              continue;
+            }
+
+            const sensorEvent = this.parseLine(trimmed, body);
+            if (sensorEvent) appendEvent(sensorEvent);
           }
+        },
+
+        parseBootLine(line, body) {
+          if (!logging || !sessionId || !line.startsWith(`${BOOT_LINE_PREFIX},`))
+            return undefined;
+
+          const parts = line.split(",");
+          const elapsedMs = Number(parts[1]);
+          if (!Number.isFinite(elapsedMs)) return undefined;
+
+          return createBootEvent(elapsedMs, body);
         },
 
         parseLine(line, body) {
@@ -544,13 +613,18 @@
         const mainTs = files["main.ts"] || "";
         const mainBlocks = files["main.blocks"] || "";
         const blockTypes = countBlockTypes(mainBlocks);
+        const blocks = parseBlocks(mainBlocks);
 
         return {
           files: Object.keys(files).sort(),
           contentHash: hashFiles(files),
+          mainTs,
+          mainBlocks,
           mainTsLength: mainTs.length,
           mainBlocksLength: mainBlocks.length,
           blockTypes,
+          blocks,
+          blockMap: mapBlocks(blocks),
           totalBlocks: Object.values(blockTypes).reduce(
             (sum, count) => sum + count,
             0,
@@ -596,11 +670,231 @@
         return { added, removed, changed };
       }
 
+      function parseBlocks(blocksXml) {
+        if (!blocksXml) return [];
+
+        const doc = new DOMParser().parseFromString(
+          blocksXml,
+          "application/xml",
+        );
+        if (doc.querySelector("parsererror")) return [];
+
+        return Array.from(doc.querySelectorAll("block[type], shadow[type]")).map(
+          (block, index) => {
+            const parentBlock = closestParentBlock(block);
+            const topBlock = topLevelBlock(block);
+            const parentEl = block.parentElement;
+            const locationKind = parentEl
+              ? parentEl.tagName.toLowerCase()
+              : "";
+
+            return {
+              id: block.getAttribute("id") || `${block.getAttribute("type")}:${index}`,
+              type: block.getAttribute("type") || "",
+              kind: block.tagName.toLowerCase(),
+              x: numberAttribute(block, "x"),
+              y: numberAttribute(block, "y"),
+              parentId: parentBlock ? parentBlock.getAttribute("id") || "" : "",
+              parentType: parentBlock
+                ? parentBlock.getAttribute("type") || ""
+                : "",
+              topId: topBlock ? topBlock.getAttribute("id") || "" : "",
+              topType: topBlock ? topBlock.getAttribute("type") || "" : "",
+              locationKind,
+              inputName: parentEl ? parentEl.getAttribute("name") || "" : "",
+              fields: directNamedChildren(block, "field"),
+              inputs: directNamedChildren(block, "value"),
+              statements: directNamedChildren(block, "statement"),
+              mutation: directMutation(block),
+            };
+          },
+        );
+      }
+
+      function mapBlocks(blocks) {
+        const map = {};
+        for (const block of blocks) map[block.id] = block;
+        return map;
+      }
+
+      function closestParentBlock(block) {
+        let current = block.parentElement;
+        while (current) {
+          if (
+            current !== block &&
+            (current.tagName.toLowerCase() === "block" ||
+              current.tagName.toLowerCase() === "shadow") &&
+            current.hasAttribute("type")
+          )
+            return current;
+          current = current.parentElement;
+        }
+        return undefined;
+      }
+
+      function topLevelBlock(block) {
+        let top = block;
+        let current = closestParentBlock(block);
+        while (current) {
+          top = current;
+          current = closestParentBlock(current);
+        }
+        return top;
+      }
+
+      function numberAttribute(el, name) {
+        const raw = el.getAttribute(name);
+        if (raw === null || raw === "") return undefined;
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : undefined;
+      }
+
+      function directNamedChildren(block, tagName) {
+        const values = {};
+        for (const child of Array.from(block.children)) {
+          if (child.tagName.toLowerCase() !== tagName) continue;
+          const name = child.getAttribute("name");
+          if (!name) continue;
+          values[name] =
+            tagName === "field"
+              ? child.textContent || ""
+              : firstChildBlockType(child);
+        }
+        return values;
+      }
+
+      function firstChildBlockType(parent) {
+        for (const child of Array.from(parent.children)) {
+          const tagName = child.tagName.toLowerCase();
+          if (tagName === "block" || tagName === "shadow")
+            return child.getAttribute("type") || "";
+        }
+        return "";
+      }
+
+      function directMutation(block) {
+        for (const child of Array.from(block.children)) {
+          if (child.tagName.toLowerCase() !== "mutation") continue;
+          const mutation = {};
+          for (const attribute of Array.from(child.attributes)) {
+            mutation[attribute.name] = attribute.value;
+          }
+          return mutation;
+        }
+        return {};
+      }
+
+      function diffBlocks(previous, current) {
+        const previousMap = (previous && previous.blockMap) || {};
+        const currentMap = current.blockMap || {};
+        const changes = [];
+
+        for (const id of Object.keys(currentMap)) {
+          if (!previousMap[id]) {
+            changes.push(blockChange("added", undefined, currentMap[id]));
+            continue;
+          }
+
+          const before = previousMap[id];
+          const after = currentMap[id];
+          if (blockLocationKey(before) !== blockLocationKey(after)) {
+            changes.push(blockChange("moved", before, after));
+          }
+          if (blockContentKey(before) !== blockContentKey(after)) {
+            changes.push(blockChange("changed", before, after));
+          }
+        }
+
+        for (const id of Object.keys(previousMap)) {
+          if (!currentMap[id]) changes.push(blockChange("removed", previousMap[id]));
+        }
+
+        return changes;
+      }
+
+      function blockChange(action, before, after) {
+        const block = after || before;
+        return {
+          action,
+          id: block.id,
+          type: block.type,
+          before: before ? blockChangeState(before) : undefined,
+          after: after ? blockChangeState(after) : undefined,
+        };
+      }
+
+      function blockChangeState(block) {
+        return {
+          x: block.x,
+          y: block.y,
+          parentId: block.parentId,
+          parentType: block.parentType,
+          topId: block.topId,
+          topType: block.topType,
+          locationKind: block.locationKind,
+          inputName: block.inputName,
+          fields: block.fields,
+          inputs: block.inputs,
+          statements: block.statements,
+          mutation: block.mutation,
+        };
+      }
+
+      function blockLocationKey(block) {
+        return JSON.stringify({
+          x: block.x,
+          y: block.y,
+          parentId: block.parentId,
+          locationKind: block.locationKind,
+          inputName: block.inputName,
+        });
+      }
+
+      function blockContentKey(block) {
+        return JSON.stringify({
+          type: block.type,
+          fields: block.fields,
+          inputs: block.inputs,
+          statements: block.statements,
+          mutation: block.mutation,
+        });
+      }
+
+      function currentCodeAnchor() {
+        if (activeRun) {
+          return {
+            contentHash: activeRun.contentHash,
+            runningContentHash: activeRun.contentHash,
+            runAnchorSource: activeRun.anchorSource,
+            runId: activeRun.runId,
+            bootAt: activeRun.bootAt,
+          };
+        }
+
+        const latest = latestCodeEventForSession() || latestCodeEvent();
+        if (!latest) {
+          return {
+            contentHash: "",
+            runningContentHash: "",
+            runAnchorSource: "none",
+          };
+        }
+
+        const anchorSource =
+          latest.sessionId === sessionId ? "current-session" : "latest-known";
+        return {
+          contentHash: latest.contentHash || "",
+          runningContentHash: latest.contentHash || "",
+          runAnchorSource: anchorSource,
+        };
+      }
+
       function createSensorEvent(values, body) {
         const event = {
           type: "sensor",
           sessionId,
-          at: new Date().toISOString(),
+          ...createTimeFields(),
+          ...currentCodeAnchor(),
           source: body.source || "",
           sim: !!body.sim,
         };
@@ -612,6 +906,40 @@
         return event;
       }
 
+      function createBootEvent(elapsedMs, body) {
+        const latest = latestCodeEventForSession() || latestCodeEvent();
+        const eventTime = createTimeFields();
+        const contentHash = latest ? latest.contentHash : "";
+        const anchorSource =
+          latest && latest.sessionId === sessionId
+            ? "current-session"
+            : latest
+              ? "latest-known"
+              : "none";
+        const runId = `run-${Date.now().toString(36)}-${elapsedMs}`;
+
+        activeRun = {
+          runId,
+          bootAt: eventTime.at,
+          contentHash,
+          anchorSource,
+        };
+
+        return {
+          type: "boot",
+          sessionId,
+          ...eventTime,
+          source: (body && body.source) || "",
+          sim: !!(body && body.sim),
+          elapsedMs,
+          contentHash,
+          runId,
+          bootAt: eventTime.at,
+          runningContentHash: contentHash,
+          runAnchorSource: anchorSource,
+        };
+      }
+
       function createCodeEvent(type, files) {
         const state = createCodeState(files);
         const previous = latestCodeEventForSession();
@@ -619,13 +947,15 @@
           previous ? previous.blockTypes : {},
           state.blockTypes,
         );
+        const blockChanges = type === "start" ? [] : diffBlocks(previous, state);
 
         return {
           type,
           sessionId,
-          at: new Date().toISOString(),
+          ...createTimeFields(),
           ...state,
           diff,
+          blockChanges,
         };
       }
 
@@ -633,7 +963,8 @@
         return {
           type,
           sessionId,
-          at: new Date().toISOString(),
+          ...createTimeFields(),
+          ...currentCodeAnchor(),
         };
       }
 
@@ -643,16 +974,28 @@
         render();
       }
 
+      function isCodeEvent(event) {
+        return event.type === "start" || event.type === "change";
+      }
+
       function latestCodeEvent() {
         for (let i = events.length - 1; i >= 0; i--) {
-          if (events[i].contentHash) return events[i];
+          if (isCodeEvent(events[i])) return events[i];
         }
         return undefined;
       }
 
       function latestCodeEventForSession() {
         for (let i = events.length - 1; i >= 0; i--) {
-          if (events[i].sessionId === sessionId && events[i].contentHash)
+          if (events[i].sessionId === sessionId && isCodeEvent(events[i]))
+            return events[i];
+        }
+        return undefined;
+      }
+
+      function latestCodeEventForActiveLog() {
+        for (let i = events.length - 1; i >= 0; i--) {
+          if (events[i].sessionId === activeLogSessionId && isCodeEvent(events[i]))
             return events[i];
         }
         return undefined;
@@ -682,8 +1025,9 @@
       }
 
       function render() {
-        const latest = latestCodeEvent();
-        countEl.textContent = String(events.length);
+        const currentEvents = activeSessionEvents();
+        const latest = latestCodeEventForActiveLog();
+        countEl.textContent = String(currentEvents.length);
         typesEl.textContent = latest
           ? String(Object.keys(latest.blockTypes).length)
           : "0";
@@ -692,10 +1036,10 @@
           ? summarizeShortDiff(latest.diff)
           : "-";
 
-        const list = events.filter((event) =>
+        const list = currentEvents.filter((event) =>
           viewMode === "sensor"
-            ? event.type === "sensor"
-            : event.type !== "sensor",
+            ? event.type === "sensor" || event.type === "boot"
+            : event.type !== "sensor" && event.type !== "boot",
         );
 
         tableHeadEl.innerHTML =
@@ -738,6 +1082,11 @@
       function summarizeEvent(event) {
         if (event.type === "start") return "session started";
         if (event.type === "stop") return "session stopped";
+        if (event.type === "boot") {
+          return `device boot (sim=${event.sim ? "yes" : "no"}, code=${
+            event.contentHash || "-"
+          })`;
+        }
         if (event.type === "sensor") {
           return SENSOR_FIELDS.filter((field) => field.key !== "elapsedMs")
             .map(
@@ -746,7 +1095,44 @@
             )
             .join(", ");
         }
+        if (event.blockChanges && event.blockChanges.length) {
+          return summarizeBlockChanges(event.blockChanges);
+        }
         return summarizeDiff(event.diff);
+      }
+
+      function summarizeBlockChanges(changes) {
+        return changes.slice(0, 8).map(summarizeBlockChange).join(" / ");
+      }
+
+      function summarizeBlockChange(change) {
+        const state = change.after || change.before || {};
+        const where = formatBlockLocation(state);
+        if (change.action === "added")
+          return `added ${change.type}${where ? ` at ${where}` : ""}`;
+        if (change.action === "removed") return `removed ${change.type}`;
+        if (change.action === "moved")
+          return `moved ${change.type}${where ? ` to ${where}` : ""}`;
+        return `changed ${change.type}${formatFieldSummary(change)}`;
+      }
+
+      function formatBlockLocation(state) {
+        if (state.x !== undefined && state.y !== undefined)
+          return `x=${state.x}, y=${state.y}`;
+        if (state.parentType)
+          return `${state.locationKind || "child"}:${state.inputName || "-"} in ${state.parentType}`;
+        return "";
+      }
+
+      function formatFieldSummary(change) {
+        const before = (change.before && change.before.fields) || {};
+        const after = (change.after && change.after.fields) || {};
+        const parts = [];
+        for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+          if (before[key] !== after[key])
+            parts.push(`${key}: ${before[key] || "-"} -> ${after[key] || "-"}`);
+        }
+        return parts.length ? ` (${parts.join(", ")})` : "";
       }
 
       function formatTime(value) {
@@ -778,24 +1164,41 @@
         },
 
         json() {
-          this.show("makecode-edit-log.json", JSON.stringify(events, null, 2));
+          const items = activeSessionEvents();
+          this.show(
+            `makecode-edit-log${exportDateSuffix(items)}.json`,
+            JSON.stringify(items, null, 2),
+          );
         },
 
         csv() {
+          const items = activeSessionEvents();
           const lines = [CSV_HEADERS.join(",")];
-          for (const event of events) {
+          for (const event of items) {
             lines.push(
               CSV_HEADERS.map((header) => this.csvCell(csvValue(event, header)))
                 .join(","),
             );
           }
-          this.show("makecode-edit-log.csv", lines.join("\n"));
+          this.show(
+            `makecode-edit-log${exportDateSuffix(items)}.csv`,
+            lines.join("\n"),
+          );
         },
 
         csvCell(value) {
           return `"${String(value).replaceAll('"', '""')}"`;
         },
       };
+
+      function exportDateSuffix(items) {
+        const dates = Array.from(
+          new Set(items.map((event) => event.localDate).filter(Boolean)),
+        ).sort();
+        if (!dates.length) return "";
+        if (dates.length === 1) return `-${dates[0]}`;
+        return `-${dates[0]}_${dates[dates.length - 1]}`;
+      }
 
       function sensorTableHead() {
         return `<tr>
@@ -827,6 +1230,10 @@
         if (header === "files") return event.files ? event.files.join("|") : "";
         if (header === "detail") return summarizeEvent(event);
         if (header === "contentHash") return event.contentHash || "";
+        if (header === "mainTs") return event.mainTs || "";
+        if (header === "mainBlocks") return event.mainBlocks || "";
+        if (header === "blockChanges")
+          return event.blockChanges ? JSON.stringify(event.blockChanges) : "";
         return event[header] ?? "";
       }
 
@@ -834,12 +1241,14 @@
         if (logging) return;
 
         sessionId = `session-${Date.now().toString(36)}`;
+        activeLogSessionId = sessionId;
+        sessionStartedAt = new Date().toISOString();
+        activeRun = undefined;
         logging = true;
         pendingStop = false;
         startEl.disabled = true;
         stopEl.disabled = false;
         codeLogger.beginSession();
-        sensorLogger.beginSession();
         if (!codeLogger.requestRead("start")) {
           resetLoggingState();
           return;
@@ -879,6 +1288,7 @@
         startEl.disabled = false;
         stopEl.disabled = true;
         codeLogger.stopWatch();
+        sensorLogger.reset();
       }
 
       function finishStop() {
@@ -969,6 +1379,7 @@
         });
       document.getElementById("clear").addEventListener("click", () => {
         events = [];
+        activeLogSessionId = "";
         saveEvents();
         render();
         setStatus("logs cleared");
