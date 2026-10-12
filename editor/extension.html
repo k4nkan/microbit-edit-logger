@@ -317,8 +317,15 @@
       const STORAGE_KEY = "makecode-edit-logger:events";
       const OUTBOX_KEY = "makecode-edit-logger:unsent-event-ids";
       const LOCAL_API_URL = "http://localhost:8000";
-      const EXPERIMENT_POLL_MS = 3000;
+      const EXPERIMENT_POLL_MS = 5000;
       const SYNC_BATCH_SIZE = 100;
+      const SYNC_CODE_DELAY_MS = 500;
+      const SYNC_SENSOR_DELAY_MS = 5000;
+      const STORAGE_SAVE_DELAY_MS = 2000;
+      // Sensor samples are kept only while the board is being handled;
+      // a resting board leaves one heartbeat sample per interval.
+      const SENSOR_MOVE_THRESHOLD_MG = 100;
+      const SENSOR_HEARTBEAT_MS = 10000;
       // Flashing over WebUSB restarts the board twice within a few hundred ms.
       const BOOT_MERGE_WINDOW_MS = 1500;
       const WATCH_INTERVAL_MS = 2000;
@@ -438,7 +445,23 @@
         }
       }
 
+      let saveTimer = 0;
+
       function saveEvents() {
+        if (!saveTimer)
+          saveTimer = window.setTimeout(saveEventsNow, STORAGE_SAVE_DELAY_MS);
+      }
+
+      // The research API keeps the full history; the browser only keeps the
+      // current logger session and anything the API has not acknowledged.
+      function saveEventsNow() {
+        clearTimeout(saveTimer);
+        saveTimer = 0;
+        events = events.filter(
+          (event) =>
+            event.sessionId === activeLogSessionId ||
+            syncer.unsent.has(event.eventId),
+        );
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
         } catch {
@@ -452,13 +475,16 @@
       const syncer = {
         unsent: new Set(loadUnsent()),
         timer: 0,
+        dueAt: 0,
         inFlight: false,
         lastError: "",
 
         add(event) {
           this.unsent.add(event.eventId);
           this.persist();
-          this.schedule(500);
+          this.schedule(
+            event.type === "sensor" ? SYNC_SENSOR_DELAY_MS : SYNC_CODE_DELAY_MS,
+          );
         },
 
         persist() {
@@ -468,7 +494,10 @@
         },
 
         schedule(delayMs) {
-          if (this.timer) return;
+          const dueAt = Date.now() + delayMs;
+          if (this.timer && this.dueAt <= dueAt) return;
+          clearTimeout(this.timer);
+          this.dueAt = dueAt;
           this.timer = window.setTimeout(() => {
             this.timer = 0;
             this.flush();
@@ -627,8 +656,40 @@
       const sensorLogger = {
         streamRequested: false,
         buffer: "",
+        lastKept: undefined,
+        skipped: 0,
+
+        keep(event) {
+          const last = this.lastKept;
+          const moved =
+            !last ||
+            ["accelerationX", "accelerationY", "accelerationZ"].some(
+              (key) =>
+                Math.abs((event[key] || 0) - (last[key] || 0)) >=
+                SENSOR_MOVE_THRESHOLD_MG,
+            );
+          const input = ["buttonA", "buttonB", "logoTouch"].some(
+            (key) => event[key] || (last && last[key]),
+          );
+          const heartbeat =
+            last && Date.parse(event.at) - Date.parse(last.at) >= SENSOR_HEARTBEAT_MS;
+          if (!moved && !input && !heartbeat) {
+            this.skipped++;
+            return false;
+          }
+          event.skippedSamples = this.skipped;
+          this.skipped = 0;
+          this.lastKept = event;
+          return true;
+        },
+
+        resetSampling() {
+          this.lastKept = undefined;
+          this.skipped = 0;
+        },
 
         beginSession() {
+          this.resetSampling();
           this.buffer = "";
           this.streamRequested = false;
           this.requestStream();
@@ -668,12 +729,15 @@
             const trimmed = line.trim();
             if (trimmed.startsWith(`${BOOT_LINE_PREFIX},`)) {
               const bootEvent = this.parseBootLine(trimmed, body);
-              if (bootEvent) appendEvent(bootEvent);
+              if (bootEvent) {
+                this.resetSampling();
+                appendEvent(bootEvent);
+              }
               continue;
             }
 
             const sensorEvent = this.parseLine(trimmed, body);
-            if (sensorEvent) appendEvent(sensorEvent);
+            if (sensorEvent && this.keep(sensorEvent)) appendEvent(sensorEvent);
           }
         },
 
@@ -896,8 +960,18 @@
         return {};
       }
 
+      let latestBlockMap = undefined;
+
+      function blockMapOf(event) {
+        if (!event) return {};
+        if (event.blockMap) return event.blockMap;
+        if (latestBlockMap && latestBlockMap.contentHash === event.contentHash)
+          return latestBlockMap.blockMap;
+        return mapBlocks(parseBlocks(event.mainBlocks || ""));
+      }
+
       function diffBlocks(previous, current) {
-        const previousMap = (previous && previous.blockMap) || {};
+        const previousMap = blockMapOf(previous);
         const currentMap = current.blockMap || {};
         const changes = [];
 
@@ -1061,12 +1135,16 @@
           state.blockTypes,
         );
         const blockChanges = type === "start" ? [] : diffBlocks(previous, state);
+        // blocks/blockMap are derivable from mainBlocks and made up most of
+        // the stored size, so only the latest snapshot keeps them in memory.
+        const { blocks, blockMap, ...stored } = state;
+        latestBlockMap = { contentHash: state.contentHash, blockMap };
 
         return {
           type,
           sessionId,
           ...createTimeFields(),
-          ...state,
+          ...stored,
           diff,
           blockChanges,
         };
@@ -1081,7 +1159,14 @@
         };
       }
 
+      // "running": the board runs the code most recently seen (since a boot).
+      // "editing": the code has changed since the board last started.
+      let phase = "editing";
+
       function appendEvent(event) {
+        if (event.type === "boot") phase = "running";
+        else if (event.type === "change") phase = "editing";
+        event.phase = phase;
         event.eventId = newEventId();
         events.push(event);
         saveEvents();
@@ -1359,6 +1444,7 @@
         activeLogSessionId = sessionId;
         sessionStartedAt = new Date().toISOString();
         activeRun = undefined;
+        phase = "editing";
         logging = true;
         pendingStop = false;
         startEl.disabled = true;
@@ -1560,12 +1646,15 @@
           return;
         events = [];
         activeLogSessionId = "";
-        saveEvents();
+        saveEventsNow();
         render();
         setStatus("logs cleared");
       });
 
-      window.addEventListener("pagehide", () => stopLogging(false));
+      window.addEventListener("pagehide", () => {
+        stopLogging(false);
+        saveEventsNow();
+      });
 
       window.addEventListener("load", () => {
         render();
