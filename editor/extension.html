@@ -1441,6 +1441,8 @@
         if (logging) return;
 
         sessionId = `session-${Date.now().toString(36)}`;
+        experimentWatcher.loggingFor =
+          (experimentWatcher.current && experimentWatcher.current.session_id) || "";
         activeLogSessionId = sessionId;
         sessionStartedAt = new Date().toISOString();
         activeRun = undefined;
@@ -1558,6 +1560,8 @@
         current: null,
         autoLogging: false,
         manualStopSessionId: "",
+        // The experiment the running logger session belongs to ("" = none).
+        loggingFor: "",
         restartAfterStop: false,
 
         async poll() {
@@ -1580,7 +1584,6 @@
         },
 
         update(session) {
-          const previousId = this.current && this.current.session_id;
           this.current = session;
           if (!session) {
             experimentStatusEl.textContent = logging
@@ -1597,7 +1600,11 @@
               startLogging();
               window.setTimeout(() => this.poll(), 1000);
             }
-          } else if (previousId && previousId !== session.session_id && this.autoLogging && logging) {
+          } else if (logging && !pendingStop && this.loggingFor !== session.session_id) {
+            // A session started outside this experiment (manually, or for the
+            // previous one) would leave the experiment without its own start
+            // snapshot, so begin a fresh logger session for it.
+            this.autoLogging = true;
             this.restartAfterStop = true;
             stopLogging();
           }
