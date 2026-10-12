@@ -21,6 +21,15 @@ MakeCode for micro:bit 用の editor extension です。
 
 方位は UI/CSV の列だけ残しています。`start sensor logging` の標準ログでは、安定性を優先して取得しません。
 
+## 記録開始の条件
+
+- Edit Logger画面の `Start` は、コード変更と実機ログの記録セッションを開始するために必要です。
+- ブロック／TypeScriptの変更履歴は、学習者プログラムに `start sensor logging` ブロックがなくても記録できます。
+- 起動マーカー（`boot`）は拡張機能が自動出力するため、`start sensor logging` ブロックは不要です。
+- 加速度、明るさ、温度、ボタンなどの連続センサー値には、学習者プログラム内の `start sensor logging` ブロックが必要です。
+
+問題サイトのローカルAPIが起動している場合、問題サイト上部の接続IDをEdit Loggerへ入力して「接続確認」を押します。「問題サイトと接続済み」と表示された状態では、イベントが `microbit-research-website/backend/data/exports/makecode-logger/<connection_id>/` にも自動保存されます。APIへ接続できない場合も、従来どおりブラウザのLocalStorageに保持され、JSON／CSVを手動出力できます。
+
 ### 起動マーカー（EL_BOOT）
 
 プログラム起動時（書き込み直後、または手動リセット時）に、シリアルへ 1 行だけ
