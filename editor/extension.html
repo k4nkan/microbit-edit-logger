@@ -115,13 +115,18 @@
         color: var(--muted);
       }
 
-      input[type="number"] {
+      input[type="number"],
+      input[type="text"] {
         width: 72px;
         min-height: 34px;
         border: 1px solid var(--line);
         border-radius: 6px;
         padding: 6px 8px;
         font: inherit;
+      }
+
+      input[type="text"] {
+        width: 140px;
       }
 
       .summary {
@@ -246,6 +251,12 @@
       </header>
 
       <section class="toolbar" aria-label="controls">
+        <label>
+          接続ID
+          <input id="connectionId" type="text" placeholder="TEST-XXXXXX" />
+        </label>
+        <button id="connectExperiment" type="button">接続確認</button>
+        <span id="connectionStatus" class="status">未接続</span>
         <button id="start" class="primary" type="button">Start</button>
         <button id="stop" type="button" disabled>Stop</button>
         <button id="exportJson" type="button">Export JSON</button>
@@ -307,6 +318,8 @@
 
     <script>
       const STORAGE_KEY = "makecode-edit-logger:events";
+      const CONNECTION_KEY = "makecode-edit-logger:connection-id";
+      const LOCAL_API_URL = "http://localhost:8000";
       const WATCH_INTERVAL_MS = 2000;
       const SENSOR_LINE_PREFIX = "EL_SENSOR";
       const BOOT_LINE_PREFIX = "EL_BOOT";
@@ -376,6 +389,8 @@
       const lastChangeEl = document.getElementById("lastChange");
       const startEl = document.getElementById("start");
       const stopEl = document.getElementById("stop");
+      const connectionIdEl = document.getElementById("connectionId");
+      const connectionStatusEl = document.getElementById("connectionStatus");
       const exportPanelEl = document.getElementById("exportPanel");
       const exportTitleEl = document.getElementById("exportTitle");
       const exportOutputEl = document.getElementById("exportOutput");
@@ -424,6 +439,61 @@
 
       function saveEvents() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+      }
+
+      let autoSaveTimer = 0;
+      let autoSaveInFlight = false;
+      let autoSavePending = false;
+      let autoSaveSessionId = "";
+      let autoSavedEventCount = 0;
+
+      function scheduleLocalServerSave() {
+        if (autoSaveTimer) return;
+        autoSaveTimer = window.setTimeout(() => {
+          autoSaveTimer = 0;
+          saveActiveSessionToLocalServer();
+        }, 500);
+      }
+
+      async function saveActiveSessionToLocalServer() {
+        if (autoSaveInFlight) {
+          autoSavePending = true;
+          return;
+        }
+
+        const items = activeSessionEvents();
+        if (!items.length) return;
+        if (autoSaveSessionId !== activeLogSessionId) {
+          autoSaveSessionId = activeLogSessionId;
+          autoSavedEventCount = 0;
+        }
+        const pendingItems = items.slice(autoSavedEventCount);
+        if (!pendingItems.length) return;
+        autoSaveInFlight = true;
+
+        try {
+          const response = await fetch(
+            `${LOCAL_API_URL}/api/logger/events/batch`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                connection_id: connectionIdEl.value.trim() || undefined,
+                events: pendingItems,
+              }),
+            },
+          );
+          if (!response.ok) throw new Error(`auto save failed: ${response.status}`);
+          autoSavedEventCount += pendingItems.length;
+        } catch {
+          // LocalStorage remains the source of truth when the API is unavailable.
+        } finally {
+          autoSaveInFlight = false;
+          if (autoSavePending) {
+            autoSavePending = false;
+            scheduleLocalServerSave();
+          }
+        }
       }
 
       function latestSessionId(items) {
@@ -972,6 +1042,7 @@
         events.push(event);
         saveEvents();
         render();
+        scheduleLocalServerSave();
       }
 
       function isCodeEvent(event) {
@@ -1349,6 +1420,35 @@
 
       viewCodeEl.addEventListener("click", () => setViewMode("code"));
       viewSensorEl.addEventListener("click", () => setViewMode("sensor"));
+
+      connectionIdEl.value = localStorage.getItem(CONNECTION_KEY) || "";
+      if (connectionIdEl.value) connectionStatusEl.textContent = "接続ID保存済み";
+      async function connectExperiment() {
+        const connectionId = connectionIdEl.value.trim().toUpperCase();
+        connectionIdEl.value = connectionId;
+        if (!connectionId) {
+          connectionStatusEl.textContent = "接続IDを入力してください";
+          connectionStatusEl.className = "status error";
+          return;
+        }
+        try {
+          const response = await fetch(
+            `${LOCAL_API_URL}/api/logger/connections/${encodeURIComponent(connectionId)}`,
+          );
+          if (!response.ok) throw new Error("not found");
+          localStorage.setItem(CONNECTION_KEY, connectionId);
+          connectionStatusEl.textContent = "問題サイトと接続済み";
+          connectionStatusEl.className = "status ok";
+          autoSavedEventCount = 0;
+          scheduleLocalServerSave();
+        } catch {
+          connectionStatusEl.textContent = "接続できません";
+          connectionStatusEl.className = "status error";
+        }
+      }
+      document
+        .getElementById("connectExperiment")
+        .addEventListener("click", connectExperiment);
 
       startEl.addEventListener("click", startLogging);
       stopEl.addEventListener("click", stopLogging);
