@@ -115,18 +115,17 @@
         color: var(--muted);
       }
 
-      input[type="number"],
-      input[type="text"] {
+      .experiment {
+        text-align: right;
+      }
+
+      input[type="number"] {
         width: 72px;
         min-height: 34px;
         border: 1px solid var(--line);
         border-radius: 6px;
         padding: 6px 8px;
         font: inherit;
-      }
-
-      input[type="text"] {
-        width: 140px;
       }
 
       .summary {
@@ -248,15 +247,13 @@
           <h1>Edit Logger</h1>
           <div id="status" class="status">initializing</div>
         </div>
+        <div class="experiment">
+          <div id="experimentStatus" class="status">実験サーバー確認中</div>
+          <div id="syncStatus" class="status"></div>
+        </div>
       </header>
 
       <section class="toolbar" aria-label="controls">
-        <label>
-          接続ID
-          <input id="connectionId" type="text" placeholder="TEST-XXXXXX" />
-        </label>
-        <button id="connectExperiment" type="button">接続確認</button>
-        <span id="connectionStatus" class="status">未接続</span>
         <button id="start" class="primary" type="button">Start</button>
         <button id="stop" type="button" disabled>Stop</button>
         <button id="exportJson" type="button">Export JSON</button>
@@ -318,8 +315,12 @@
 
     <script>
       const STORAGE_KEY = "makecode-edit-logger:events";
-      const CONNECTION_KEY = "makecode-edit-logger:connection-id";
+      const OUTBOX_KEY = "makecode-edit-logger:unsent-event-ids";
       const LOCAL_API_URL = "http://localhost:8000";
+      const EXPERIMENT_POLL_MS = 3000;
+      const SYNC_BATCH_SIZE = 100;
+      // Flashing over WebUSB restarts the board twice within a few hundred ms.
+      const BOOT_MERGE_WINDOW_MS = 1500;
       const WATCH_INTERVAL_MS = 2000;
       const SENSOR_LINE_PREFIX = "EL_SENSOR";
       const BOOT_LINE_PREFIX = "EL_BOOT";
@@ -389,8 +390,8 @@
       const lastChangeEl = document.getElementById("lastChange");
       const startEl = document.getElementById("start");
       const stopEl = document.getElementById("stop");
-      const connectionIdEl = document.getElementById("connectionId");
-      const connectionStatusEl = document.getElementById("connectionStatus");
+      const experimentStatusEl = document.getElementById("experimentStatus");
+      const syncStatusEl = document.getElementById("syncStatus");
       const exportPanelEl = document.getElementById("exportPanel");
       const exportTitleEl = document.getElementById("exportTitle");
       const exportOutputEl = document.getElementById("exportOutput");
@@ -438,62 +439,99 @@
       }
 
       function saveEvents() {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
-      }
-
-      let autoSaveTimer = 0;
-      let autoSaveInFlight = false;
-      let autoSavePending = false;
-      let autoSaveSessionId = "";
-      let autoSavedEventCount = 0;
-
-      function scheduleLocalServerSave() {
-        if (autoSaveTimer) return;
-        autoSaveTimer = window.setTimeout(() => {
-          autoSaveTimer = 0;
-          saveActiveSessionToLocalServer();
-        }, 500);
-      }
-
-      async function saveActiveSessionToLocalServer() {
-        if (autoSaveInFlight) {
-          autoSavePending = true;
-          return;
-        }
-
-        const items = activeSessionEvents();
-        if (!items.length) return;
-        if (autoSaveSessionId !== activeLogSessionId) {
-          autoSaveSessionId = activeLogSessionId;
-          autoSavedEventCount = 0;
-        }
-        const pendingItems = items.slice(autoSavedEventCount);
-        if (!pendingItems.length) return;
-        autoSaveInFlight = true;
-
         try {
-          const response = await fetch(
-            `${LOCAL_API_URL}/api/logger/events/batch`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                connection_id: connectionIdEl.value.trim() || undefined,
-                events: pendingItems,
-              }),
-            },
-          );
-          if (!response.ok) throw new Error(`auto save failed: ${response.status}`);
-          autoSavedEventCount += pendingItems.length;
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
         } catch {
-          // LocalStorage remains the source of truth when the API is unavailable.
-        } finally {
-          autoSaveInFlight = false;
-          if (autoSavePending) {
-            autoSavePending = false;
-            scheduleLocalServerSave();
-          }
+          // Quota exceeded: the server copy (outbox) keeps working.
+          setStatus("browser storage full; use server copy or export", "error");
         }
+      }
+
+      // Events not yet acknowledged by the local research API, by eventId.
+      // Persisted so a reload or a stopped API never drops data.
+      const syncer = {
+        unsent: new Set(loadUnsent()),
+        timer: 0,
+        inFlight: false,
+        lastError: "",
+
+        add(event) {
+          this.unsent.add(event.eventId);
+          this.persist();
+          this.schedule(500);
+        },
+
+        persist() {
+          try {
+            localStorage.setItem(OUTBOX_KEY, JSON.stringify([...this.unsent]));
+          } catch {}
+        },
+
+        schedule(delayMs) {
+          if (this.timer) return;
+          this.timer = window.setTimeout(() => {
+            this.timer = 0;
+            this.flush();
+          }, delayMs);
+        },
+
+        async flush() {
+          if (this.inFlight || !this.unsent.size) return this.render();
+          const batch = events
+            .filter((event) => this.unsent.has(event.eventId))
+            .slice(0, SYNC_BATCH_SIZE);
+          if (!batch.length) {
+            // The events were cleared locally; nothing left to send.
+            this.unsent.clear();
+            this.persist();
+            return this.render();
+          }
+
+          this.inFlight = true;
+          try {
+            const response = await fetch(
+              `${LOCAL_API_URL}/api/logger/events/batch`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ events: batch }),
+              },
+            );
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            for (const event of batch) this.unsent.delete(event.eventId);
+            this.persist();
+            this.lastError = "";
+          } catch (error) {
+            this.lastError = error instanceof Error ? error.message : "error";
+          } finally {
+            this.inFlight = false;
+            this.render();
+            if (this.unsent.size) this.schedule(this.lastError ? 5000 : 200);
+          }
+        },
+
+        render() {
+          if (!this.unsent.size) {
+            syncStatusEl.textContent = "サーバー保存: 最新";
+            syncStatusEl.className = "status ok";
+          } else {
+            syncStatusEl.textContent = `サーバー未送信 ${this.unsent.size}件${this.lastError ? "（再試行中）" : ""}`;
+            syncStatusEl.className = `status ${this.lastError ? "error" : ""}`.trim();
+          }
+        },
+      };
+
+      function loadUnsent() {
+        try {
+          return JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]");
+        } catch {
+          return [];
+        }
+      }
+
+      function newEventId() {
+        if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
       }
 
       function latestSessionId(items) {
@@ -628,9 +666,9 @@
 
           for (const line of lines) {
             const trimmed = line.trim();
-            const bootEvent = this.parseBootLine(trimmed, body);
-            if (bootEvent) {
-              appendEvent(bootEvent);
+            if (trimmed.startsWith(`${BOOT_LINE_PREFIX},`)) {
+              const bootEvent = this.parseBootLine(trimmed, body);
+              if (bootEvent) appendEvent(bootEvent);
               continue;
             }
 
@@ -646,6 +684,10 @@
           const parts = line.split(",");
           const elapsedMs = Number(parts[1]);
           if (!Number.isFinite(elapsedMs)) return undefined;
+          if (activeRun && Date.now() - activeRun.bootMs < BOOT_MERGE_WINDOW_MS) {
+            activeRun.bootMs = Date.now();
+            return undefined;
+          }
 
           return createBootEvent(elapsedMs, body);
         },
@@ -990,6 +1032,7 @@
 
         activeRun = {
           runId,
+          bootMs: Date.now(),
           bootAt: eventTime.at,
           contentHash,
           anchorSource,
@@ -1039,10 +1082,11 @@
       }
 
       function appendEvent(event) {
+        event.eventId = newEventId();
         events.push(event);
         saveEvents();
         render();
-        scheduleLocalServerSave();
+        syncer.add(event);
       }
 
       function isCodeEvent(event) {
@@ -1368,6 +1412,7 @@
         appendEvent(createSessionEvent("stop"));
         pendingStop = false;
         setStatus("logging stopped", "ok");
+        experimentWatcher.afterStop();
       }
 
       window.addEventListener("message", (ev) => {
@@ -1421,37 +1466,67 @@
       viewCodeEl.addEventListener("click", () => setViewMode("code"));
       viewSensorEl.addEventListener("click", () => setViewMode("sensor"));
 
-      connectionIdEl.value = localStorage.getItem(CONNECTION_KEY) || "";
-      if (connectionIdEl.value) connectionStatusEl.textContent = "接続ID保存済み";
-      async function connectExperiment() {
-        const connectionId = connectionIdEl.value.trim().toUpperCase();
-        connectionIdEl.value = connectionId;
-        if (!connectionId) {
-          connectionStatusEl.textContent = "接続IDを入力してください";
-          connectionStatusEl.className = "status error";
-          return;
-        }
-        try {
-          const response = await fetch(
-            `${LOCAL_API_URL}/api/logger/connections/${encodeURIComponent(connectionId)}`,
-          );
-          if (!response.ok) throw new Error("not found");
-          localStorage.setItem(CONNECTION_KEY, connectionId);
-          connectionStatusEl.textContent = "問題サイトと接続済み";
-          connectionStatusEl.className = "status ok";
-          autoSavedEventCount = 0;
-          scheduleLocalServerSave();
-        } catch {
-          connectionStatusEl.textContent = "接続できません";
-          connectionStatusEl.className = "status error";
-        }
-      }
-      document
-        .getElementById("connectExperiment")
-        .addEventListener("click", connectExperiment);
+      // Follows the experiment started on the problem site: logging starts
+      // and stops with it, so participants never have to press Start.
+      const experimentWatcher = {
+        current: null,
+        autoLogging: false,
+        manualStopSessionId: "",
+        restartAfterStop: false,
+
+        async poll() {
+          try {
+            const response = await fetch(`${LOCAL_API_URL}/api/experiment/current`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            this.update((await response.json()).session);
+          } catch {
+            experimentStatusEl.textContent = "実験サーバーに接続できません（ブラウザ内に保存中）";
+            experimentStatusEl.className = "status error";
+          }
+        },
+
+        update(session) {
+          const previousId = this.current && this.current.session_id;
+          this.current = session;
+          if (!session) {
+            experimentStatusEl.textContent = logging
+              ? "実験未開始（記録は保存されますが実験に紐付きません）"
+              : "実験未開始：問題サイトで「開始」を押すと自動で記録します";
+            experimentStatusEl.className = "status";
+            if (this.autoLogging && logging) stopLogging();
+            return;
+          }
+
+          if (window.parent !== window && !logging && !pendingStop) {
+            if (this.manualStopSessionId !== session.session_id) {
+              this.autoLogging = true;
+              startLogging();
+            }
+          } else if (previousId && previousId !== session.session_id && this.autoLogging && logging) {
+            this.restartAfterStop = true;
+            stopLogging();
+          }
+          experimentStatusEl.textContent = logging
+            ? `実験 ${session.participant_id} に記録中`
+            : `実験 ${session.participant_id}：停止中（Startで再開）`;
+          experimentStatusEl.className = `status ${logging ? "ok" : "error"}`;
+        },
+
+        afterStop() {
+          if (!this.restartAfterStop) return;
+          this.restartAfterStop = false;
+          if (this.current) startLogging();
+        },
+      };
 
       startEl.addEventListener("click", startLogging);
-      stopEl.addEventListener("click", stopLogging);
+      stopEl.addEventListener("click", () => {
+        // A manual stop opts out of automatic restarts for this experiment.
+        experimentWatcher.autoLogging = false;
+        experimentWatcher.manualStopSessionId =
+          (experimentWatcher.current && experimentWatcher.current.session_id) || "";
+        stopLogging();
+      });
       document
         .getElementById("exportJson")
         .addEventListener("click", () => exporter.json());
@@ -1478,6 +1553,11 @@
           }
         });
       document.getElementById("clear").addEventListener("click", () => {
+        if (
+          syncer.unsent.size &&
+          !confirm(`サーバー未送信のイベントが${syncer.unsent.size}件あります。消去しますか？`)
+        )
+          return;
         events = [];
         activeLogSessionId = "";
         saveEvents();
@@ -1489,6 +1569,10 @@
 
       window.addEventListener("load", () => {
         render();
+        syncer.render();
+        syncer.schedule(0);
+        experimentWatcher.poll();
+        window.setInterval(() => experimentWatcher.poll(), EXPERIMENT_POLL_MS);
         if (window.parent === window) {
           setStatus(
             "UI preview only. Open from MakeCode to capture edit events.",

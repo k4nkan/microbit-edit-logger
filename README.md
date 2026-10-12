@@ -23,12 +23,13 @@ MakeCode for micro:bit 用の editor extension です。
 
 ## 記録開始の条件
 
-- Edit Logger画面の `Start` は、コード変更と実機ログの記録セッションを開始するために必要です。
+- 問題サイトのローカルAPI（`localhost:8000`）で実験が始まっていると、Edit Loggerは記録を自動で開始し、実験の終了とともに停止します。画面右上に `実験 P01 に記録中` と表示されます。
+- APIを使わない場合や手動で記録したい場合は、`Start` / `Stop` を使います。手動で `Stop` した実験の間は、自動では再開しません。
 - ブロック／TypeScriptの変更履歴は、学習者プログラムに `start sensor logging` ブロックがなくても記録できます。
 - 起動マーカー（`boot`）は拡張機能が自動出力するため、`start sensor logging` ブロックは不要です。
 - 加速度、明るさ、温度、ボタンなどの連続センサー値には、学習者プログラム内の `start sensor logging` ブロックが必要です。
 
-問題サイトのローカルAPIが起動している場合、問題サイト上部の接続IDをEdit Loggerへ入力して「接続確認」を押します。「問題サイトと接続済み」と表示された状態では、イベントが `microbit-research-website/backend/data/exports/makecode-logger/<connection_id>/` にも自動保存されます。APIへ接続できない場合も、従来どおりブラウザのLocalStorageに保持され、JSON／CSVを手動出力できます。
+各イベントには `eventId` が付き、記録と同時にAPIへ送信されます。送信できなかったイベントはLocalStorageに残り、5秒ごとに再送されます（画面右上の `サーバー未送信 N件`）。保存先は `microbit-research-website/backend/data/exports/sessions/<開始日時>_<参加者ID>/makecode-events.jsonl` です。JSON／CSVの手動出力も従来どおり使えます。
 
 ### 起動マーカー（EL_BOOT）
 
@@ -41,6 +42,8 @@ MakeCode for micro:bit 用の editor extension です。
 実際に動いていたか」をおおまかに特定できます。実機かどうかは `sim` 列
 （`false` なら実機）で判別できます。同一コードのまま手動リセットした場合も
 発火するため、100% 書き込みタイミングと一致するわけではない点は注意してください。
+
+WebUSBで書き込むと、micro:bitは数百ms以内に2回起動します。1.5秒以内に続いた起動は1回の `boot` としてまとめます。
 
 ## セットアップ
 
